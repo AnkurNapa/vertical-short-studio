@@ -1,5 +1,21 @@
 # Benchmark method and results
 
+> **Correction (2026-07-25).** An earlier version of this file reported RMS-derived
+> numbers measured with a bug: `astats=metadata=1:reset=0` emits *cumulative*
+> metadata on **every frame** (329 prints in a 7-second window), and the scripts read
+> it with `grep -m1` — the **first frame**, not the window. On a file beginning with
+> digital silence this returns `-inf`, which is how it surfaced.
+>
+> Both scripts now read `| tail -1`. Every RMS figure below has been re-measured.
+> Both headline conclusions survived; the magnitudes changed:
+>
+> | Claim | As published | Corrected |
+> |---|---|---|
+> | Voice-band vs full-band gate (noise outside speech band) | +15.9 dB | **+14.6 dB** |
+> | Multiband vs single-band (fan) | +1.8 dB | **+3.0 dB** |
+>
+> Loudness/true-peak figures come from `ebur128` and were never affected.
+
 Every number in this repo came from one of two sources: a real 33-minute conference
 recording, or a controlled synthetic test with a clean reference. Both are described
 here so you can disagree with the method rather than take the numbers on faith.
@@ -97,16 +113,16 @@ Two noise conditions, because they behave completely differently:
 **(b) Noise with a hole in the speech band** — rumble + hiss, i.e. air-conditioning and
 room tone, the usual real-world case.
 
-| chain | pause SNR | voice damage |
-|---|---|---|
-| no expander | 18.62 dB | 0.36 dB |
-| full-band gate | 26.69 dB | 0.30 dB |
-| **voice-band-keyed** | **42.60 dB** | 0.32 dB |
+| chain | pause SNR |
+|---|---|
+| raw noisy | 9.73 dB |
+| no expander | 6.30 dB |
+| full-band gate | 14.21 dB |
+| **voice-band-keyed** | **28.77 dB** |
 
-**+15.9 dB** for keying the expander on 300–3400 Hz instead of the full band, at no
-measurable cost in voice damage. When the noise sits mostly outside the speech band, a
-full-band detector sees that noise and holds the gate open; a speech-band detector
-does not.
+**+14.6 dB** for keying the expander on 300–3400 Hz instead of the full band. When the
+noise sits mostly outside the speech band, a full-band detector sees that noise and
+holds the gate open; a speech-band detector does not.
 
 This is the one place where the vendor research translated into a concrete,
 reproducible gain.
@@ -125,18 +141,18 @@ What the `fan` preset buys, measured in the band it targets:
 | `fan` preset | **−55.8 dB** | **−50.0 dB** | −46.8 dB |
 
 3.8 dB more hum removal, costing 0.7 dB more broadband residual. Note the `fan` preset
-scores *slightly worse* on overall pause SNR (33.6 vs 35.0) — removing low-frequency
+scored *slightly worse* on overall pause SNR — removing low-frequency
 energy lowers the total level, so loudnorm applies more gain and lifts what remains.
 Judging it on full-band SNR alone would have hidden what it actually does.
 
 Then single-band vs multiband expansion, same input, both with the `fan` preset:
 
-| | pause SNR | hum <200 Hz | voice damage |
-|---|---|---|---|
-| `gate` (single band) | 33.59 dB | −55.83 dB | 0.49 dB |
-| **`multiband`** | **35.35 dB** | **−58.37 dB** | **0.47 dB** |
+| | pause SNR | hum <200 Hz |
+|---|---|---|
+| `gate` (single band) | 23.39 dB | −49.29 dB |
+| **`multiband`** | **26.43 dB** | **−51.44 dB** |
 
-Better on all three, so multiband is the default. The per-band profile it measured shows
+Better on both counts, so multiband is the default. The per-band profile it measured shows
 why — the fan is 29 dB louder in the bottom band than the top:
 
 ```
@@ -189,3 +205,56 @@ Pause timestamps shift after processing if the file was trimmed; re-run
 - Numbers in test 1 come from one recording. The direction of each effect has held on
   other material; the exact magnitudes will not transfer.
 - Reverb is untouched. A boomy room stays boomy.
+
+
+## Test 4 — fitted presets (grid search, not training)
+
+`scripts/tune-presets.sh` synthesises each noise type at a known SNR against a clean
+speech reference, sweeps the parameter grid, and scores each combination as
+`SNR - 6 x voice-damage`. This is a parameter fit, not machine learning: no model,
+no weights, no dataset.
+
+| noise | fitted params | SNR | damage |
+|---|---|---|---|
+| fan | hpf=110 hum=50 nr=32 margin=4 ratio=4 | 35.57 dB | 0.197 dB |
+| hvac | hpf=110 nr=32 margin=10 ratio=2.5 | 22.41 dB | 0.364 dB |
+| hum | hpf=85 hum=50 nr=32 margin=10 ratio=4 | 58.63 dB | 0.001 dB |
+| hiss | hpf=85 nr=32 margin=10 ratio=4 | 39.16 dB | 0.211 dB |
+| street | hpf=150 nr=12 margin=10 ratio=4 | 23.34 dB | 0.263 dB |
+| tv | hpf=85 nr=32 margin=10 ratio=4 | 32.17 dB | 0.288 dB |
+
+`hum` at 58.6 dB SNR and 0.001 dB damage confirms the prediction that tonal noise is
+almost perfectly removable. `hvac` and `street` score worst — broadband noise
+overlapping the voice is the hard case, as expected.
+
+The fit disagreed with several hand-picked values: `fan` wanted `nr=32 ratio=4`
+where I had guessed `nr=18 ratio=3`. Those presets are now the fitted values.
+
+### A third bug the tuner exposed
+
+The `impulse` row failed entirely — every combination scored `-999`. Cause:
+`afftdn`'s `nf` parameter is restricted to **[-80, -20] dB**, and the calibrated
+noise floor for that loud test case was `-15`, so ffmpeg aborted on every run. This
+would have broken `enhance-voice.sh` on any genuinely loud recording — precisely its
+target case. `nf` is now clamped into range in both scripts.
+
+## Test 5 — a real user file, and why "louder" reads as "noisier"
+
+A 22 s clip at -24.7 LUFS with mild fan noise (already 29.8 dB SNR). After the standard
+fitted `fan` preset the reported SNR improved to 35.7 dB — yet the fan was *more*
+audible. Measuring the fan band directly explains it:
+
+| | fan <500 Hz | voice body/mid |
+|---|---|---|
+| original | -59.30 dB | +3.08 dB |
+| fitted `fan` preset | -55.36 dB | -1.62 dB |
+| `MB_MARGIN=14 HPF=140` | **-64.63 dB** | -2.64 dB |
+| `MB_MARGIN=20 HPF=170 nr=45` | -69.83 dB | -3.73 dB |
+
+Normalising a quiet recording to -14 LUFS raises *everything* by ~10 dB, noise
+included. Relative SNR improves while the absolute noise level goes **up**, and ears
+hear absolute level. On quiet sources, push the low-band margin up rather than
+trusting the SNR figure alone.
+
+The last row costs 2.1 dB of vocal body against the third — that is where a voice
+starts sounding thin. Ratio of 90-300 Hz to 300-3000 Hz is a usable thinness check.

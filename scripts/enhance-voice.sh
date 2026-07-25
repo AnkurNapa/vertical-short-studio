@@ -51,20 +51,28 @@ command -v ffmpeg >/dev/null || { echo "ffmpeg not found (brew install ffmpeg)" 
 #   fan       ceiling or pedestal fan: motor hum + blade whoosh
 #   hvac      air-conditioner / extractor / server hum
 #   hum       electrical buzz only (mains harmonics), voice otherwise clean
+#   hiss      tape/preamp hiss, broadband
+#   impulse   chair creaks, knocks, desk bumps, mouth clicks
 #   appliance mixer, grinder, blender, drill — loud broadband bursts
 #   street    traffic rumble through a window
 #   tv        TV or radio talking in the background
 #
 PRESET="${PRESET:-room}"
 case "$PRESET" in
-  fan)       : "${HPF:=110}" "${HUM_HZ:=50}" "${DENOISE_NR:=18}" "${GATE_RATIO:=3}" ;;
-  hvac)      : "${HPF:=100}" "${HUM_HZ:=0}"  "${DENOISE_NR:=18}" "${GATE_RATIO:=3}" ;;
-  hum)       : "${HPF:=70}"  "${HUM_HZ:=50}" "${DENOISE_NR:=6}"  "${GATE_RATIO:=2}" ;;
-  appliance) : "${HPF:=120}" "${HUM_HZ:=0}"  "${DENOISE_NR:=24}" "${GATE_RATIO:=3}" ;;
-  street)    : "${HPF:=120}" "${HUM_HZ:=0}"  "${DENOISE_NR:=20}" "${GATE_RATIO:=3}" ;;
-  tv)        : "${HPF:=90}"  "${HUM_HZ:=0}"  "${DENOISE_NR:=10}" "${GATE_RATIO:=2}" ;;
+  # Values below are FITTED by scripts/tune-presets.sh, not hand-picked.
+  # Grid search maximising (SNR - 6 x voice-damage) per noise type. See BENCHMARK.md.
+  fan)       : "${HPF:=110}" "${HUM_HZ:=50}" "${DENOISE_NR:=32}" "${GATE_RATIO:=4}"   "${MB_MARGIN:=4}"  ;;
+  hvac)      : "${HPF:=110}" "${HUM_HZ:=0}"  "${DENOISE_NR:=32}" "${GATE_RATIO:=2.5}" "${MB_MARGIN:=10}" ;;
+  hum)       : "${HPF:=85}"  "${HUM_HZ:=50}" "${DENOISE_NR:=32}" "${GATE_RATIO:=4}"   "${MB_MARGIN:=10}" ;;
+  street)    : "${HPF:=150}" "${HUM_HZ:=0}"  "${DENOISE_NR:=12}" "${GATE_RATIO:=4}"   "${MB_MARGIN:=10}" ;;
+  tv)        : "${HPF:=85}"  "${HUM_HZ:=0}"  "${DENOISE_NR:=32}" "${GATE_RATIO:=4}"   "${MB_MARGIN:=10}" ;;
+  # chair creaks, knocks, mouth clicks: impulsive, so declick does the work here,
+  # not the expander or the denoiser
+  impulse)   : "${HPF:=85}"  "${HUM_HZ:=0}"  "${DENOISE_NR:=12}" "${GATE_RATIO:=2.5}" "${DECLICK:=1}" ;;
+  appliance) : "${HPF:=120}" "${HUM_HZ:=0}"  "${DENOISE_NR:=32}" "${GATE_RATIO:=4}"   "${DECLICK:=1}" ;;
+  hiss)      : "${HPF:=85}"  "${HUM_HZ:=0}"  "${DENOISE_NR:=32}" "${GATE_RATIO:=4}"   "${MB_MARGIN:=10}" ;;
   room)      : ;;
-  *) echo "unknown PRESET '$PRESET' (room|fan|hvac|hum|appliance|street|tv)" >&2; exit 1 ;;
+  *) echo "unknown PRESET '$PRESET' (room|fan|hvac|hum|hiss|impulse|appliance|street|tv)" >&2; exit 1 ;;
 esac
 
 # --- tunables (env-overridable) ----------------------------------------------
@@ -94,7 +102,7 @@ rms_of () { # file start dur [prefilter]
   local ef="astats=metadata=1:reset=0,ametadata=print:file=-"
   [ -n "${4:-}" ] && ef="$4,$ef"
   ffmpeg -hide_banner -nostats -v error ${2:+-ss "$2"} ${3:+-t "$3"} -i "$1" \
-    -af "$ef" -f null - 2>&1 | grep -m1 "^lavfi.astats.1.RMS_level=" | cut -d= -f2
+    -af "$ef" -f null - 2>&1 | grep "^lavfi.astats.1.RMS_level=" | tail -1 | cut -d= -f2
 }
 
 # --- multiband spectral gating ------------------------------------------------
@@ -189,7 +197,9 @@ fi
 
 if [ -n "$NOISE_RMS" ]; then
   # denoise floor at the measured noise; expander threshold a touch above it
-  DENOISE_NF="${DENOISE_NF:-$(awk -v n="$NOISE_RMS" 'BEGIN{printf "%.0f", n}')}"
+  # afftdn only accepts nf in [-80,-20]; a very noisy room can measure above -20,
+  # which makes ffmpeg abort outright. Clamp instead of failing.
+  DENOISE_NF="${DENOISE_NF:-$(awk -v n="$NOISE_RMS" 'BEGIN{v=n; if(v>-20)v=-20; if(v<-80)v=-80; printf "%.0f", v}')}"
   GATE_THRESH="${GATE_THRESH:-$(awk -v n="$NOISE_RMS" 'BEGIN{printf "%.0f", n+5}')}"
 else
   DENOISE_NF="${DENOISE_NF:--35}"   # -35 is the useful limit; -40 with high nr
@@ -197,7 +207,13 @@ else
 fi
 echo "    afftdn nf=${DENOISE_NF}  expander threshold=${GATE_THRESH} dB"
 
-PRE="highpass=f=${HPF}"
+PRE=""
+# Impulsive noise — chair creaks, knocks, mouth clicks, desk bumps — is NOT
+# stationary, so neither spectral subtraction nor an expander touches it: it
+# happens *during* speech and looks like signal to both. adeclick interpolates
+# across short impulses instead. Runs first, before anything smears them.
+[ "${DECLICK:-0}" = "1" ] && PRE="adeclick=window=55:overlap=75:arorder=8:threshold=2,"
+PRE="${PRE}highpass=f=${HPF}"
 # Mains hum is tonal, so narrow notches remove it almost perfectly while a
 # broadband denoiser would only smear it. Harmonics matter as much as the
 # fundamental — a 50 Hz buzz is usually audible mostly at 100/150/200 Hz.

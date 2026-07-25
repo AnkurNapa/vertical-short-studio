@@ -22,7 +22,7 @@ rms () { # file start dur [prefilter]
   local ef="astats=metadata=1:reset=0,ametadata=print:file=-"
   [ -n "${4:-}" ] && ef="$4,$ef"
   ffmpeg -hide_banner -nostats -v error ${2:+-ss "$2"} ${3:+-t "$3"} -i "$1" \
-    -af "$ef" -f null - 2>&1 | grep -m1 "^lavfi.astats.1.RMS_level=" | cut -d= -f2
+    -af "$ef" -f null - 2>&1 | grep "^lavfi.astats.1.RMS_level=" | tail -1 | cut -d= -f2
 }
 
 if [ "$MODE" = "--find-pauses" ]; then
