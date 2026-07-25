@@ -111,6 +111,52 @@ does not.
 This is the one place where the vendor research translated into a concrete,
 reproducible gain.
 
+## Test 3 — ceiling fan, and multiband vs single-band
+
+Synthetic fan noise (50 Hz hum + 100/150 Hz harmonics + low-passed turbulence) mixed
+with the same clean speech. Raw SNR 13.9 dB — a realistic fan recording.
+
+What the `fan` preset buys, measured in the band it targets:
+
+| | hum <200 Hz | rumble <400 Hz | full band |
+|---|---|---|---|
+| raw | −28.6 dB | −28.4 dB | −28.1 dB |
+| `room` preset | −52.0 dB | −49.1 dB | −47.5 dB |
+| `fan` preset | **−55.8 dB** | **−50.0 dB** | −46.8 dB |
+
+3.8 dB more hum removal, costing 0.7 dB more broadband residual. Note the `fan` preset
+scores *slightly worse* on overall pause SNR (33.6 vs 35.0) — removing low-frequency
+energy lowers the total level, so loudnorm applies more gain and lifts what remains.
+Judging it on full-band SNR alone would have hidden what it actually does.
+
+Then single-band vs multiband expansion, same input, both with the `fan` preset:
+
+| | pause SNR | hum <200 Hz | voice damage |
+|---|---|---|---|
+| `gate` (single band) | 33.59 dB | −55.83 dB | 0.49 dB |
+| **`multiband`** | **35.35 dB** | **−58.37 dB** | **0.47 dB** |
+
+Better on all three, so multiband is the default. The per-band profile it measured shows
+why — the fan is 29 dB louder in the bottom band than the top:
+
+```
+band 0 (0-200 Hz)      noise -32.3 dB
+band 1 (200-500 Hz)    noise -39.3 dB
+band 2 (500-1200 Hz)   noise -42.7 dB
+band 3 (1200-3000 Hz)  noise -49.2 dB
+band 4 (3000-6000 Hz)  noise -59.0 dB
+band 5 (6000+ Hz)      noise -61.4 dB
+```
+
+A single threshold cannot serve both ends of that range; six can.
+
+### A second failed measurement
+
+The pause detector was fixed at −38 dB. A running fan sits at about −28 dB, so *no*
+pause was ever detected and the tool silently fell back to default thresholds — on
+exactly the recordings that most need calibrating. The detector now sweeps
+−45/−38/−32/−27/−22 dB until it finds one, and reports which threshold worked.
+
 ### A failed measurement, kept deliberately
 
 The first version of test 2 used a single noise condition and set the expander

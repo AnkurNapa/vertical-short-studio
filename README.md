@@ -74,6 +74,55 @@ VOICE_GATE=0    scripts/enhance-voice.sh in.mp4   # old full-band gate
 ```
 Works on video (`.mp4`, `.mov` → mp4 out) and audio (`.wav`, `.m4a`, `.mp3` → wav out).
 
+### What noise can this actually remove?
+
+Two properties decide it, and neither is about how loud the noise is:
+
+- **Stationary?** Steady noise can be profiled and subtracted *even underneath speech*.
+  Unpredictable noise can only be handled in the gaps.
+- **Outside 300–3400 Hz?** Noise away from the speech formants can be removed without
+  touching the voice. Noise sitting *on* the voice cannot — not by any amount of DSP.
+
+```bash
+PRESET=fan scripts/enhance-voice.sh video.mp4
+```
+
+| `PRESET` | Noise | Stationary | Realistic outcome |
+|---|---|---|---|
+| `fan` | Ceiling / pedestal fan | ✅ | **Very good.** Motor hum notched out, blade whoosh is low-mid and largely removable |
+| `hvac` | Air-con, extractor, server hum | ✅ | **Very good.** The easiest case — steady and mostly below the voice |
+| `hum` | Mains buzz, ground loop | ✅ | **Near-perfect.** Tonal, so narrow notches take it out almost entirely |
+| `street` | Traffic rumble through a window | partly | **Good** for the steady rumble; passing vehicles and horns survive |
+| `room` | General room tone / hiss | ✅ | **Good.** The default |
+| `appliance` | Mixer, grinder, blender, drill | ❌ | **Limited.** Between bursts, clean. *During* a burst it is louder than the voice and broadband — largely unrecoverable |
+| `tv` | TV / radio / background chatter | ❌ | **Poor, and honestly so.** It is speech, occupying the same band as your speech. No single-channel DSP separates speech from speech — that needs a neural source-separation model |
+
+Fan and air-conditioner are the best cases here. Background TV is the worst — if a tool
+promises to remove that cleanly, be sceptical.
+
+Presets are starting points; auto-calibration still measures *your* recording on top.
+Set `HUM_HZ=60` if you're on 60 Hz mains (US/Japan) — the default is 50 (Europe/India/Australia).
+
+### Algorithms
+
+```bash
+ALGO=multiband  scripts/enhance-voice.sh in.mp4   # default
+ALGO=gate       scripts/enhance-voice.sh in.mp4   # single-band
+```
+
+**`multiband` (default)** — the signal is split at 200/500/1200/3000/6000 Hz and each
+band gets its own expander, with the threshold taken from *that band's* measured noise
+level in the calibration pause. This is classical spectral gating (Boll 1979; the basis
+of Audacity's Noise Reduction and `noisereduce`) at band rather than bin resolution. On
+the fan benchmark it beat single-band on every metric: **SNR 33.6 → 35.4 dB**, hum below
+200 Hz **−55.8 → −58.4 dB**, voice damage 0.49 → 0.47 dB.
+
+**`gate`** — one speech-band-keyed expander. Faster, and used automatically when no
+usable pause exists to calibrate from.
+
+Also in the chain: `afftdn` spectral subtraction calibrated to the measured floor,
+harmonic notching for mains hum, and a high-pass tuned per preset.
+
 ### `audio-report.sh` — measure instead of guess
 
 ```bash
